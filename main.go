@@ -37,8 +37,7 @@ func calculateTermFrequency(tokens []string) TermFrequency {
 	return tf
 }
 
-//	It builds an inverted index from a collection of documents.
-//
+// It builds an inverted index from a collection of documents.
 // An inverted index is a data structure that maps each term (token) to the list of document IDs in which it appears.
 // It returns a map[string][]int where the keys are terms and the values are slices of document IDs.
 func buildInvertedIndex(docs []Document) InvertedIndex {
