@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search Engine</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+
+        .search-container {
+            margin: 50px;
+        }
+
+        .search-input {
+            width: 300px;
+            padding: 10px;
+            font-size: 16px;
+        }
+
+        .search-button {
+            padding: 10px 15px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        .results {
+            margin-top: 20px;
+        }
+
+        .result-item {
+            margin-bottom: 10px;
+            padding: 10px;
+            border: 1px solid lightskyblue;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="search-container">
+        <input type="text" id="searchQuery" class="search-input" placeholder="Enter your search query..."
+            oninput="performSearch()">
+        <button onclick="performSearch()" class="search-button">Search</button>
+        <div id="results" class="results"></div>
+    </div>
+
+    <script>
+        function performSearch() {
+            const query = document.getElementById('searchQuery').value;
+
+            if (query.length === 0) {
+                document.getElementById('results').innerHTML = '';
+                return;
+            }
+
+            fetch(`/search?query=${encodeURIComponent(query)}`)
+                .then(response => response.json())
+                .then(data => {
+                    console.log(`data : ${data}`)
+                    const resultsContainer = document.getElementById('results');
+                    resultsContainer.innerHTML = '';
+                    if (data != null) {
+                        data.forEach(result => {
+                            const resultItem = document.createElement('div');
+                            resultItem.className = 'result-item';
+                            resultItem.textContent = result;
+                            resultsContainer.appendChild(resultItem);
+                        });
+                    } else {
+                        const resultItem = document.createElement('div');
+                        resultItem.className = 'result-item';
+                        resultItem.textContent = `No documents found for ${query}!`;
+                        resultsContainer.appendChild(resultItem);
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        }
+    </script>
+</body>
+
+</html>

@@ -1,8 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"html/template"
+	"log"
 	"math"
+	"net/http"
 	"sort"
 	"strings"
 )
@@ -16,15 +20,35 @@ type TermFrequency map[string]float64
 type InvertedIndex map[string][]int
 type TFIDFIndex map[string]map[int]float64
 
-// It takes a string of text as input and tokenizes it into individual words.
-// It splits the text into tokens (words) using whitespaces as delimiters and returns a slice of strings containing the tokens.
-func tokenize(text string) []string {
-	return strings.Fields(text)
+var docs = []Document{
+	{ID: 1, Text: "This is a document about Go programming."},
+	{ID: 2, Text: "Go is a statically typed, compiled programming language."},
+	{ID: 3, Text: "Elasticsearch is a distributed, RESTful search and analytics engine. Go"},
+	{ID: 4, Text: "A programming language is a computer language intended to formulate algorithms and produce computer programs that apply them."},
+	{ID: 5, Text: "Pair programming is an agile working method which is based on collaboration between two developers on the same workstation for the creation and coding of a computer program."},
+	{ID: 6, Text: "An API is a set of definitions and protocols that facilitates the creation and integration of application software."},
+	{ID: 7, Text: "Efficient Testing Strategies for Go Functions Handling Large Data Inserts into PostgreSQL Tables"},
 }
 
-// It calculates the term frequency (TF) of each token in a given slice of tokens.
-// Term frequency is the number of times a term appears in a document divided by the total number of terms in the document.
-// It returns a map[string]float64 where the keys are tokens and the values are their corresponding TF scores.
+var invertedIndex InvertedIndex
+var tfidfIndex TFIDFIndex
+
+// Initialize indexes
+func init() {
+	invertedIndex = buildInvertedIndex(docs)
+	tfidfIndex = buildTFIDFIndex(docs, invertedIndex)
+}
+
+// Tokenize text into words and normalize them to lowercase
+func tokenize(text string) []string {
+	words := strings.Fields(text)
+	for i, word := range words {
+		words[i] = strings.ToLower(word)
+	}
+	return words
+}
+
+// Calculate term frequency
 func calculateTermFrequency(tokens []string) TermFrequency {
 	tf := make(TermFrequency)
 	totalTokens := len(tokens)
@@ -37,9 +61,7 @@ func calculateTermFrequency(tokens []string) TermFrequency {
 	return tf
 }
 
-// It builds an inverted index from a collection of documents.
-// An inverted index is a data structure that maps each term (token) to the list of document IDs in which it appears.
-// It returns a map[string][]int where the keys are terms and the values are slices of document IDs.
+// Build inverted index
 func buildInvertedIndex(docs []Document) InvertedIndex {
 	index := make(InvertedIndex)
 	for _, doc := range docs {
@@ -51,9 +73,7 @@ func buildInvertedIndex(docs []Document) InvertedIndex {
 	return index
 }
 
-// It calculates the inverse document frequency (IDF) of each term in an inverted index.
-// IDF is a measure of how important a term is across all documents in a corpus. It is calculated as the logarithm of the total number of documents divided by the number of documents containing the term.
-// It returns a map[string]float64 where the keys are terms and the values are their corresponding IDF scores.
+// Calculate IDF
 func calculateIDF(index InvertedIndex, totalDocs int) map[string]float64 {
 	idf := make(map[string]float64)
 	for term, docIDs := range index {
@@ -62,9 +82,7 @@ func calculateIDF(index InvertedIndex, totalDocs int) map[string]float64 {
 	return idf
 }
 
-// It builds a TF-IDF index from a collection of documents and their corresponding inverted index.
-// TF-IDF (Term Frequency-Inverse Document Frequency) is a numerical statistic that reflects the importance of a term in a document relative to a corpus.
-// It returns a map[string]map[int]float64 where the outer map's keys are terms and the inner map's keys are document IDs, and the values are their corresponding TF-IDF scores.
+// Build TF-IDF index
 func buildTFIDFIndex(docs []Document, invertedIndex InvertedIndex) TFIDFIndex {
 	tfidfIndex := make(TFIDFIndex)
 	totalDocs := len(docs)
@@ -86,9 +104,7 @@ func buildTFIDFIndex(docs []Document, invertedIndex InvertedIndex) TFIDFIndex {
 	return tfidfIndex
 }
 
-// It performs a TF-IDF based search for a given query string.
-// It calculates the TF-IDF scores for each term in the query and aggregates them across documents to produce search results.
-// It returns a map[int]float64 where the keys are document IDs and the values are their corresponding TF-IDF scores.
+// Perform TF-IDF search
 func searchTFIDF(tfidfIndex TFIDFIndex, query string) map[int]float64 {
 	terms := tokenize(query)
 	queryTF := calculateTermFrequency(terms)
@@ -106,9 +122,27 @@ func searchTFIDF(tfidfIndex TFIDFIndex, query string) map[int]float64 {
 	return result
 }
 
-// It ranks search results based on their TF-IDF scores.
-// It sorts the search results by TF-IDF score in descending order.
-// It returns a slice of document IDs sorted by their TF-IDF scores.
+// Perform secondary letter-by-letter search for suggestions
+func letterByLetterSearch(query string) []int {
+	query = strings.ToLower(query)
+	result := make(map[int]bool)
+
+	for _, doc := range docs {
+		text := strings.ToLower(doc.Text)
+		if strings.Contains(text, query) {
+			result[doc.ID] = true
+		}
+	}
+
+	var docIDs []int
+	for docID := range result {
+		docIDs = append(docIDs, docID)
+	}
+
+	return docIDs
+}
+
+// Rank search results
 func rankSearchResults(results map[int]float64) []int {
 	type result struct {
 		docID int
@@ -132,33 +166,65 @@ func rankSearchResults(results map[int]float64) []int {
 	return rankedDocIDs
 }
 
-func main() {
-	// Example documents
-	docs := []Document{
-		{ID: 1, Text: "This is a document about Go programming."},
-		{ID: 2, Text: "Go is a statically typed, compiled programming language."},
-		{ID: 3, Text: "Elasticsearch is a distributed, RESTful search and analytics engine. Go"},
+// Serve the index.html page
+func serveIndexPage(w http.ResponseWriter, r *http.Request) {
+	tmpl, err := template.ParseFiles("index.html")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	tmpl.Execute(w, nil)
+}
 
-	// Build inverted index and TF-IDF index
-	invertedIndex := buildInvertedIndex(docs)
-	tfidfIndex := buildTFIDFIndex(docs, invertedIndex)
-
-	// Perform search
-	query := "Go"
+// Handle search requests
+func handleSearch(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("query")
 	searchResults := searchTFIDF(tfidfIndex, query)
-
-	// Rank search results
 	rankedResults := rankSearchResults(searchResults)
 
-	// Print results
-	fmt.Printf("Search results for query '%s':\n", query)
+	// Perform letter-by-letter search for suggestions
+	letterSearchResults := letterByLetterSearch(query)
+	suggestions := make(map[int]bool)
+	for _, docID := range letterSearchResults {
+		suggestions[docID] = true
+	}
+
+	// Combine ranked results and suggestions
+	var results []string
 	for _, docID := range rankedResults {
+		if _, ok := suggestions[docID]; ok {
+			for _, doc := range docs {
+				if doc.ID == docID {
+					results = append(results, doc.Text)
+					delete(suggestions, docID)
+					break
+				}
+			}
+		}
+	}
+	for docID := range suggestions {
 		for _, doc := range docs {
 			if doc.ID == docID {
-				fmt.Printf("%s\n", doc.Text)
+				results = append(results, doc.Text)
 				break
 			}
 		}
 	}
+
+	jsonResponse, err := json.Marshal(results)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(jsonResponse)
+}
+
+func main() {
+	http.HandleFunc("/", serveIndexPage)
+	http.HandleFunc("/search", handleSearch)
+
+	fmt.Println("Server started at :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
