@@ -9,34 +9,152 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+
+	"github.com/PuerkitoBio/goquery"
+	"github.com/ledongthuc/pdf"
 )
 
-type Document struct {
+type Document interface {
+	GetID() int
+	GetText() string
+}
+
+type GenericDocument struct {
 	ID   int
 	Text string
+}
+
+func (d GenericDocument) GetID() int {
+	return d.ID
+}
+
+func (d GenericDocument) GetText() string {
+	return d.Text
+}
+
+type WebDocument struct {
+	ID  int
+	URL string
+}
+
+func (d WebDocument) GetID() int {
+	return d.ID
+}
+
+func (d WebDocument) GetText() string {
+	resp, err := http.Get(d.URL)
+	if err != nil {
+		log.Printf("Error fetching URL %s: %v", d.URL, err)
+		return ""
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		log.Printf("Error parsing HTML from %s: %v", d.URL, err)
+		return ""
+	}
+
+	return doc.Find("body").Text()
+}
+
+type PDFDocument struct {
+	ID   int
+	Path string
+}
+
+func (d PDFDocument) GetID() int {
+	return d.ID
+}
+
+func (d PDFDocument) GetText() string {
+	f, r, err := pdf.Open(d.Path)
+	if err != nil {
+		log.Printf("Error opening PDF %s: %v", d.Path, err)
+		return ""
+	}
+	defer f.Close()
+
+	var text string
+	for pageIndex := 1; pageIndex <= r.NumPage(); pageIndex++ {
+		p := r.Page(pageIndex)
+		if p.V.IsNull() {
+			continue
+		}
+		content, _ := p.GetPlainText(nil)
+		text += content
+	}
+	return text
 }
 
 type TermFrequency map[string]float64
 type InvertedIndex map[string][]int
 type TFIDFIndex map[string]map[int]float64
 
-var docs = []Document{
-	{ID: 1, Text: "This is a document about Go programming."},
-	{ID: 2, Text: "Go is a statically typed, compiled programming language."},
-	{ID: 3, Text: "Elasticsearch is a distributed, RESTful search and analytics engine. Go"},
-	{ID: 4, Text: "A programming language is a computer language intended to formulate algorithms and produce computer programs that apply them."},
-	{ID: 5, Text: "Pair programming is an agile working method which is based on collaboration between two developers on the same workstation for the creation and coding of a computer program."},
-	{ID: 6, Text: "An API is a set of definitions and protocols that facilitates the creation and integration of application software."},
-	{ID: 7, Text: "Efficient Testing Strategies for Go Functions Handling Large Data Inserts into PostgreSQL Tables"},
+type FTS struct {
+	Documents     []Document
+	InvertedIndex InvertedIndex
+	TFIDFIndex    TFIDFIndex
 }
 
-var invertedIndex InvertedIndex
-var tfidfIndex TFIDFIndex
+func NewFTS() *FTS {
+	return &FTS{
+		Documents:     []Document{},
+		InvertedIndex: make(InvertedIndex),
+		TFIDFIndex:    make(TFIDFIndex),
+	}
+}
 
-// Initialize indexes
-func init() {
-	invertedIndex = buildInvertedIndex(docs)
-	tfidfIndex = buildTFIDFIndex(docs, invertedIndex)
+func (fts *FTS) AddDocument(doc Document) {
+	fts.Documents = append(fts.Documents, doc)
+}
+
+func (fts *FTS) Start() {
+	fts.buildInvertedIndex()
+	fts.buildTFIDFIndex()
+}
+
+func (fts *FTS) buildInvertedIndex() {
+	for _, doc := range fts.Documents {
+		tokens := tokenize(doc.GetText())
+		for _, token := range tokens {
+			fts.InvertedIndex[token] = append(fts.InvertedIndex[token], doc.GetID())
+		}
+	}
+}
+
+func (fts *FTS) buildTFIDFIndex() {
+	totalDocs := len(fts.Documents)
+	idf := calculateIDF(fts.InvertedIndex, totalDocs)
+
+	for _, doc := range fts.Documents {
+		tokens := tokenize(doc.GetText())
+		docTF := calculateTermFrequency(tokens)
+		for token, tf := range docTF {
+			idfValue := idf[token]
+			if _, ok := fts.TFIDFIndex[token]; !ok {
+				fts.TFIDFIndex[token] = make(map[int]float64)
+			}
+			fts.TFIDFIndex[token][doc.GetID()] = tf * idfValue
+		}
+	}
+}
+
+func (fts *FTS) Search(query string) map[int]float64 {
+	terms := tokenize(query)
+	queryTF := calculateTermFrequency(terms)
+
+	result := make(map[int]float64)
+
+	for term, tf := range queryTF {
+		if docIDs, ok := fts.TFIDFIndex[term]; ok {
+			for docID, tfidf := range docIDs {
+				result[docID] += tf * tfidf
+			}
+		}
+	}
+
+	return result
 }
 
 // Tokenize text into words and normalize them to lowercase
@@ -61,18 +179,6 @@ func calculateTermFrequency(tokens []string) TermFrequency {
 	return tf
 }
 
-// Build inverted index
-func buildInvertedIndex(docs []Document) InvertedIndex {
-	index := make(InvertedIndex)
-	for _, doc := range docs {
-		tokens := tokenize(doc.Text)
-		for _, token := range tokens {
-			index[token] = append(index[token], doc.ID)
-		}
-	}
-	return index
-}
-
 // Calculate IDF
 func calculateIDF(index InvertedIndex, totalDocs int) map[string]float64 {
 	idf := make(map[string]float64)
@@ -82,67 +188,6 @@ func calculateIDF(index InvertedIndex, totalDocs int) map[string]float64 {
 	return idf
 }
 
-// Build TF-IDF index
-func buildTFIDFIndex(docs []Document, invertedIndex InvertedIndex) TFIDFIndex {
-	tfidfIndex := make(TFIDFIndex)
-	totalDocs := len(docs)
-
-	idf := calculateIDF(invertedIndex, totalDocs)
-
-	for _, doc := range docs {
-		tokens := tokenize(doc.Text)
-		docTF := calculateTermFrequency(tokens)
-		for token, tf := range docTF {
-			idfValue := idf[token]
-			if _, ok := tfidfIndex[token]; !ok {
-				tfidfIndex[token] = make(map[int]float64)
-			}
-			tfidfIndex[token][doc.ID] = tf * idfValue
-		}
-	}
-
-	return tfidfIndex
-}
-
-// Perform TF-IDF search
-func searchTFIDF(tfidfIndex TFIDFIndex, query string) map[int]float64 {
-	terms := tokenize(query)
-	queryTF := calculateTermFrequency(terms)
-
-	result := make(map[int]float64)
-
-	for term, tf := range queryTF {
-		if docIDs, ok := tfidfIndex[term]; ok {
-			for docID, tfidf := range docIDs {
-				result[docID] += tf * tfidf // accumulate TF-IDF score
-			}
-		}
-	}
-
-	return result
-}
-
-// Perform secondary letter-by-letter search for suggestions
-func letterByLetterSearch(query string) []int {
-	query = strings.ToLower(query)
-	result := make(map[int]bool)
-
-	for _, doc := range docs {
-		text := strings.ToLower(doc.Text)
-		if strings.Contains(text, query) {
-			result[doc.ID] = true
-		}
-	}
-
-	var docIDs []int
-	for docID := range result {
-		docIDs = append(docIDs, docID)
-	}
-
-	return docIDs
-}
-
-// Rank search results
 func rankSearchResults(results map[int]float64) []int {
 	type result struct {
 		docID int
@@ -166,7 +211,6 @@ func rankSearchResults(results map[int]float64) []int {
 	return rankedDocIDs
 }
 
-// Serve the index.html page
 func serveIndexPage(w http.ResponseWriter, r *http.Request) {
 	tmpl, err := template.ParseFiles("index.html")
 	if err != nil {
@@ -176,36 +220,16 @@ func serveIndexPage(w http.ResponseWriter, r *http.Request) {
 	tmpl.Execute(w, nil)
 }
 
-// Handle search requests
-func handleSearch(w http.ResponseWriter, r *http.Request) {
+func handleSearch(w http.ResponseWriter, r *http.Request, fts *FTS) {
 	query := r.URL.Query().Get("query")
-	searchResults := searchTFIDF(tfidfIndex, query)
+	searchResults := fts.Search(query)
 	rankedResults := rankSearchResults(searchResults)
 
-	// Perform letter-by-letter search for suggestions
-	letterSearchResults := letterByLetterSearch(query)
-	suggestions := make(map[int]bool)
-	for _, docID := range letterSearchResults {
-		suggestions[docID] = true
-	}
-
-	// Combine ranked results and suggestions
 	var results []string
 	for _, docID := range rankedResults {
-		if _, ok := suggestions[docID]; ok {
-			for _, doc := range docs {
-				if doc.ID == docID {
-					results = append(results, doc.Text)
-					delete(suggestions, docID)
-					break
-				}
-			}
-		}
-	}
-	for docID := range suggestions {
-		for _, doc := range docs {
-			if doc.ID == docID {
-				results = append(results, doc.Text)
+		for _, doc := range fts.Documents {
+			if doc.GetID() == docID {
+				results = append(results, doc.GetText())
 				break
 			}
 		}
@@ -222,8 +246,24 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	fts := NewFTS()
+
+	// Add generic documents
+	fts.AddDocument(GenericDocument{ID: 1, Text: "This is a document about Go programming."})
+	fts.AddDocument(GenericDocument{ID: 2, Text: "Go is a statically typed, compiled programming language."})
+
+	// Add a web document
+	fts.AddDocument(WebDocument{ID: 3, URL: "https://learnopencv.com/handwritten-text-recognition-using-ocr/"})
+
+	// Add a PDF document
+	fts.AddDocument(PDFDocument{ID: 4, Path: "document.pdf"})
+
+	fts.Start()
+
 	http.HandleFunc("/", serveIndexPage)
-	http.HandleFunc("/search", handleSearch)
+	http.HandleFunc("/search", func(w http.ResponseWriter, r *http.Request) {
+		handleSearch(w, r, fts)
+	})
 
 	fmt.Println("Server started at :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
